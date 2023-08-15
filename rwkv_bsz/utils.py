@@ -137,89 +137,40 @@ class PIPELINE():
             probs[sorted_ids[top_k:]] = 0
         if temperature != 1.0:
             probs = probs ** (1.0 / temperature)
-        out = torch.multinomial(probs, num_samples=1)[:,0]
+        out = torch.multinomial(probs, num_samples=1)[:, 0]
         out = out.unsqueeze(1).cpu()
         return out
     
 
     def gen_bsz(self, ctx, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None):
-        all_tokens = []
-        out_last = 0
+        B = len(ctx)
         all_str = {}
-        out_str = ''
-        ttt =0
-        print(len(ctx))
+        all_state = {}
         out_np = np.empty((len(ctx),), dtype='U')
         occurrence = {}
         for i in range(token_count):
             # forward & adjust prob.
             tokens,lengs = self.encode_bsz(ctx) if i == 0 else (token,torch.tensor(1))
             while len(tokens[0]) > 0:
-                out, state,_ = self.model.forward(tokens[:,:args.chunk_len], state, lengs)
+                out, state = self.model.forward(tokens[:, :args.chunk_len], state, lengs)
                 tokens = tokens[:, args.chunk_len:]
 
             # sampler
             token = self.sample_bsz(out, temperature=args.temperature, top_p=args.top_p, top_k=args.top_k)
             # output
             tmp = self.decode_bsz(token)
-            print(tmp)
-            #if '\ufffd' not in tmp:  # is valid utf-8 string?
             out_np = np.char.add(out_np, tmp)
-                #out_last = i + 1
-            # if '\n\n' in out_np[0]:
-            #     out_np[0] = out_np[0].strip()
-            #     break
-            last = 0
+
+
             for k, line in enumerate(out_np):
                 if '\n\n' in line or '\ufffd' in line:
-                    if k not in all_str:
+                    #state = torch.cat(state[k, :], state[k + 1, :])
+                    if k not in all_str :
                         #print(line)
-                        all_str[k] = line
+                        state_list = []
+                        for s in state:
+                            state_list.append(s[k])
+                        all_state[k] = state_list
+                        all_str[k] = out_np[k]
                         if len(all_str) == len(ctx):
-                            return all_str
-        return all_str
-
-    def generate(self, ctx, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None):
-        all_tokens = []
-        out_last = 0
-        out_str = ''
-        occurrence = {}
-        score = 0
-        for i in range(token_count):
-
-            # forward & adjust prob.
-            tokens = self.encode(ctx) if i == 0 else [token]
-            while len(tokens) > 0:
-                out, state = self.model.forward(tokens[:args.chunk_len], state)
-                tokens = tokens[args.chunk_len:]
-
-            for n in args.token_ban:
-                out[n] = -float('inf')
-            for n in occurrence:
-                out[n] -= (args.alpha_presence + occurrence[n] * args.alpha_frequency)
-
-            # sampler
-            token = self.sample_logits(out, temperature=args.temperature, top_p=args.top_p, top_k=args.top_k)
-
-            if token in args.token_stop:
-                break
-            all_tokens += [token]
-            if token not in occurrence:
-                occurrence[token] = 1
-            else:
-                occurrence[token] += 1
-
-            # output
-            tmp = self.decode(all_tokens[out_last:])
-            if '\ufffd' not in tmp:  # is valid utf-8 string?
-                if callback:
-                    callback(tmp)
-                out_str += tmp
-                out_last = i + 1
-            else :
-                break
-                #print(tmp)
-            if '\n\n' in out_str:  # is valid utf-8 string?
-                out_str = out_str.strip()
-                break
-        return out_str
+                            return all_str, all_state

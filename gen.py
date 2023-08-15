@@ -50,13 +50,12 @@ msg1 = ["Q: 你是谁？\n\nA:",
         "Q: 你能做什么？\n\nA:",
         "Q: 你好\n\nA:",
         ]
-msg2 = ["Q: 你好\n\nA:"]
-msg3 = ["Q: What\n\nA:"]
+msg2 = ["Q: 你好\n\nA:", "Q: 你是谁？\n\nA:"]
+msg3 = ["Q: 你能做什么？\n\nA:"]
 def gen(msg):
-    answer1 = pipeline.gen_bsz(msg, token_count=500, args=args)
-    print(answer1)
-    #print(answer1[0,:4])
-    return answer1
+    answer, state = pipeline.gen_bsz(msg, token_count=500, args=args)
+    print(answer, len(state))
+    return answer
 
 # start = time.time()
 # print(pipeline.encode_bsz(msg1))
@@ -66,22 +65,9 @@ def gen(msg):
 
 gen(msg2)
 
-start1 = time.time()
-gen(msg1)
-end1 = time.time()
-print(end1-start1)
-
-# msg1  = ["你好"]
-#
-# gen(msg1)
-
-# start = time.time()
-# gen(msg1)
-# end = time.time()
-# print(end-start)
-#
 # start1 = time.time()
-# gen(msg2)
+# gen(msg1)
 # end1 = time.time()
 # print(end1-start1)
+
 

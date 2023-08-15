@@ -5,6 +5,7 @@
 import types, gc, os, time, re
 import torch
 from torch.nn import functional as F
+
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -19,19 +20,25 @@ if os.environ.get('RWKV_JIT_ON') != '0':
     MyStatic = torch.jit.script
 else:
     MyModule = torch.nn.Module
+
+
     def __nop(ob):
         return ob
+
+
     MyFunction = __nop
     MyStatic = __nop
 
 if os.environ.get('RWKV_CUDA_ON') == '1':
     from torch.utils.cpp_extension import load
+
     load(
         name=f"wkv_cuda",
         sources=[f"{current_path}/cuda/wrapper.cpp", f"{current_path}/cuda/operators.cu"],
         verbose=True,
         extra_cuda_cflags=["-t 4", "-std=c++17", "--use_fast_math", "-O3", "--extra-device-vectorization"],
         is_python_module=False)
+
 
     @MyStatic
     def cuda_wkv(T: int, C: int, w, u, k, v, aa, bb, pp):
@@ -45,6 +52,8 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
         y = torch.empty((T, C), device=w.device, memory_format=torch.contiguous_format, dtype=k.dtype)
         torch.ops.rwkv.wkv_forward(1, T, C, w, u, k, v, y, aa, bb, pp)
         return y, aa, bb, pp
+
+
     @MyStatic
     def cuda_mm8_seq(B: int, N: int, M: int, x, w, mx, rx, my, ry):
         assert x.dtype == mx.dtype == rx.dtype == my.dtype == ry.dtype
@@ -57,6 +66,8 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
         y = torch.empty((B, M), device=w.device, dtype=x.dtype)
         torch.ops.rwkv.mm8_seq(B, N, M, x, w, mx, rx, my, ry, y)
         return y
+
+
     @MyStatic
     def cuda_mm8_one(N: int, M: int, x, w, mx, rx, my, ry):
         assert x.dtype == mx.dtype == rx.dtype == my.dtype == ry.dtype
@@ -72,10 +83,11 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
 else:
     os.environ["RWKV_CUDA_ON"] = '0'
 
+
 ########################################################################################################
 
 class RWKV(MyModule):
-    def __init__(self, model, strategy, verbose = True, convert_and_save_and_exit = None):
+    def __init__(self, model, strategy, verbose=True, convert_and_save_and_exit=None):
         super().__init__()
         if verbose:
             prxxx = lambda *args, **kwargs: print(*args, **kwargs)
@@ -94,35 +106,36 @@ class RWKV(MyModule):
 
         # Rescale for fp16 mode: set x = x/2 every X layer (to avoid fp16 overflow)
         self.RESCALE_LAYER = 6 if 'fp16' in strategy else 0
-        prxxx(f'RWKV_JIT_ON {os.environ["RWKV_JIT_ON"]} RWKV_CUDA_ON {os.environ["RWKV_CUDA_ON"]} RESCALE_LAYER {self.RESCALE_LAYER}\n')
+        prxxx(
+            f'RWKV_JIT_ON {os.environ["RWKV_JIT_ON"]} RWKV_CUDA_ON {os.environ["RWKV_CUDA_ON"]} RESCALE_LAYER {self.RESCALE_LAYER}\n')
 
         args.MODEL_NAME = args.MODEL_NAME.strip()
         if not args.MODEL_NAME.endswith('.pth'):
             args.MODEL_NAME += '.pth'
         prxxx(f'Loading {args.MODEL_NAME} ...')
         with torch.no_grad():
-            self.w = torch.load(args.MODEL_NAME, map_location='cpu') # load model to CPU first
+            self.w = torch.load(args.MODEL_NAME, map_location='cpu')  # load model to CPU first
             gc.collect()
             w = self.w
 
             ALREADY_CONVERTED = False
             if '_strategy' in w:
                 ALREADY_CONVERTED = True
-                assert convert_and_save_and_exit == None # you should only convert a raw model
+                assert convert_and_save_and_exit == None  # you should only convert a raw model
                 prxxx(f"Converted model: strategy {w['_strategy']}, version {w['_version']}\n")
-                assert w['_strategy'] == args.strategy_string # if you are using a new strategy, re-convert the model
-                assert float(w['_version']) >= 0.7 # sometimes you should re-convert using latest convert_model.py
+                assert w['_strategy'] == args.strategy_string  # if you are using a new strategy, re-convert the model
+                assert float(w['_version']) >= 0.7  # sometimes you should re-convert using latest convert_model.py
                 assert w['_rescale_layer'] == self.RESCALE_LAYER
                 del w['_strategy']
                 del w['_version']
                 del w['_rescale_layer']
-            
+
             args.n_embd = w['emb.weight'].shape[1]
             args.n_layer = 0
             keys = list(w.keys())
             for x in keys:
                 layer_id = int(x.split('.')[1]) if ('blocks.' in x) else 0
-                args.n_layer = max(args.n_layer, layer_id+1)
+                args.n_layer = max(args.n_layer, layer_id + 1)
 
             ####################### Compute strategy
 
@@ -136,11 +149,16 @@ class RWKV(MyModule):
             for i in range(len(s)):
                 si = s[i]
                 si1 = si[1]
-                if si1.startswith('fp32'): si[1] = [torch.float]
-                elif si1.startswith('fp16'): si[1] = [torch.float16]
-                elif si1.startswith('bf16'): si[1] = [torch.bfloat16]
-                if si1.endswith('i8'): si[1] += [torch.uint8]
-                else: si[1] += [si[1][0]]
+                if si1.startswith('fp32'):
+                    si[1] = [torch.float]
+                elif si1.startswith('fp16'):
+                    si[1] = [torch.float16]
+                elif si1.startswith('bf16'):
+                    si[1] = [torch.bfloat16]
+                if si1.endswith('i8'):
+                    si[1] += [torch.uint8]
+                else:
+                    si[1] += [si[1][0]]
                 if len(si) > 2:
                     ss = si[2]
                     assert ss.startswith('*')
@@ -163,19 +181,20 @@ class RWKV(MyModule):
                             allocated += plan[i]
                             free_slots -= 1
                 if to_allocate > allocated:
-                    plan[len(s)-1] += to_allocate - allocated
+                    plan[len(s) - 1] += to_allocate - allocated
             else:
                 if to_allocate > allocated:
                     stream_count = to_allocate - allocated
                     plan[stream_i] += stream_count
-            prxxx(f'Strategy: (total {args.n_layer}+1={args.n_layer+1} layers)')
+            prxxx(f'Strategy: (total {args.n_layer}+1={args.n_layer + 1} layers)')
             for i in range(len(s)):
                 ss = s[i]
                 if i != stream_i:
-                    prxxx(f'* {ss[0]} {str(ss[1]).replace("torch.","")}, store {plan[i]} layers')
+                    prxxx(f'* {ss[0]} {str(ss[1]).replace("torch.", "")}, store {plan[i]} layers')
                 else:
-                    prxxx(f'* {ss[0]} {str(ss[1]).replace("torch.","")}, store {plan[i]-stream_count} layers, stream {stream_count} layers')
-                plan[i] += (0 if i == 0 else plan[i-1])
+                    prxxx(
+                        f'* {ss[0]} {str(ss[1]).replace("torch.", "")}, store {plan[i] - stream_count} layers, stream {stream_count} layers')
+                plan[i] += (0 if i == 0 else plan[i - 1])
             self.strategy = [None] * (args.n_layer + 1)
             strategy = self.strategy
             for n in range(args.n_layer + 1):
@@ -189,16 +208,21 @@ class RWKV(MyModule):
                         if i == stream_i and n >= (plan[i] - stream_count):
                             strategy[n].stream = True
                         break
-                prxxx(f"{n}-{strategy[n].device}-{str(strategy[n].atype).replace('torch.','')}-{str(strategy[n].wtype).replace('torch.','')}{'-stream' if strategy[n].stream else ''}",end=' ')
+                prxxx(
+                    f"{n}-{strategy[n].device}-{str(strategy[n].atype).replace('torch.', '')}-{str(strategy[n].wtype).replace('torch.', '')}{'-stream' if strategy[n].stream else ''}",
+                    end=' ')
             prxxx()
 
             ####################### Load weights to self.w
 
             if not ALREADY_CONVERTED:
-                try: # precompute embedding
-                    w['emb.weight'] = F.layer_norm(w['emb.weight'], (args.n_embd,), weight=w['blocks.0.ln0.weight'], bias=w['blocks.0.ln0.bias'])
+                try:  # precompute embedding
+                    w['emb.weight'] = F.layer_norm(w['emb.weight'], (args.n_embd,), weight=w['blocks.0.ln0.weight'],
+                                                   bias=w['blocks.0.ln0.bias'])
                 except:
-                    w['emb.weight'] = F.layer_norm(w['emb.weight'].float(), (args.n_embd,), weight=w['blocks.0.ln0.weight'].float(), bias=w['blocks.0.ln0.bias'].float())
+                    w['emb.weight'] = F.layer_norm(w['emb.weight'].float(), (args.n_embd,),
+                                                   weight=w['blocks.0.ln0.weight'].float(),
+                                                   bias=w['blocks.0.ln0.bias'].float())
                 del w['blocks.0.ln0.weight']
                 del w['blocks.0.ln0.bias']
 
@@ -226,9 +250,9 @@ class RWKV(MyModule):
                     if 'key.weight' in x or 'value.weight' in x or 'receptance.weight' in x or 'output.weight' in x or 'head.weight' in x:
                         w[x] = w[x].t()
 
-                    if '.time_decay' in x: # need fp32 for this
+                    if '.time_decay' in x:  # need fp32 for this
                         w[x] = -torch.exp(w[x].float())
-                    elif '.time_first' in x: # need fp32 for this
+                    elif '.time_first' in x:  # need fp32 for this
                         w[x] = w[x].float()
                     else:
                         if (len(w[x].shape) == 2) and ('emb' not in x):
@@ -238,49 +262,51 @@ class RWKV(MyModule):
                                 w[x] = w[x].float()
 
                                 if w[x].shape[0] > w[x].shape[1]:
-                                    w[x+'_my'] = torch.amin(w[x], dim=1).unsqueeze(1)
-                                    w[x] = w[x] - w[x+'_my']
-                                    w[x+'_mx'] = torch.amin(w[x], dim=0)
-                                    w[x] = w[x] - w[x+'_mx']
-                                    w[x+'_rx'] = torch.amax(w[x], dim=0)
-                                    w[x] = w[x] / w[x+'_rx']
-                                    w[x+'_ry'] = torch.amax(w[x], dim=1).unsqueeze(1)
-                                    w[x] = w[x] / w[x+'_ry']
+                                    w[x + '_my'] = torch.amin(w[x], dim=1).unsqueeze(1)
+                                    w[x] = w[x] - w[x + '_my']
+                                    w[x + '_mx'] = torch.amin(w[x], dim=0)
+                                    w[x] = w[x] - w[x + '_mx']
+                                    w[x + '_rx'] = torch.amax(w[x], dim=0)
+                                    w[x] = w[x] / w[x + '_rx']
+                                    w[x + '_ry'] = torch.amax(w[x], dim=1).unsqueeze(1)
+                                    w[x] = w[x] / w[x + '_ry']
                                 else:
-                                    w[x+'_mx'] = torch.amin(w[x], dim=0)
-                                    w[x] = w[x] - w[x+'_mx']
-                                    w[x+'_my'] = torch.amin(w[x], dim=1).unsqueeze(1)
-                                    w[x] = w[x] - w[x+'_my']
-                                    w[x+'_rx'] = torch.amax(w[x], dim=0)
-                                    w[x] = w[x] / w[x+'_rx']
-                                    w[x+'_ry'] = torch.amax(w[x], dim=1).unsqueeze(1)
-                                    w[x] = w[x] / w[x+'_ry']
+                                    w[x + '_mx'] = torch.amin(w[x], dim=0)
+                                    w[x] = w[x] - w[x + '_mx']
+                                    w[x + '_my'] = torch.amin(w[x], dim=1).unsqueeze(1)
+                                    w[x] = w[x] - w[x + '_my']
+                                    w[x + '_rx'] = torch.amax(w[x], dim=0)
+                                    w[x] = w[x] / w[x + '_rx']
+                                    w[x + '_ry'] = torch.amax(w[x], dim=1).unsqueeze(1)
+                                    w[x] = w[x] / w[x + '_ry']
 
                                 w[x] = torch.clip(torch.floor(w[x] * 256), min=0, max=255).to(dtype=torch.uint8)
-                                w[x+'_mx'] = w[x+'_mx'].to(dtype=ATYPE).contiguous()
-                                w[x+'_rx'] = (w[x+'_rx'] / 16).to(dtype=ATYPE).contiguous()
-                                w[x+'_my'] = w[x+'_my'].to(dtype=ATYPE).contiguous()
-                                w[x+'_ry'] = (w[x+'_ry'] / 16).to(dtype=ATYPE).contiguous()
+                                w[x + '_mx'] = w[x + '_mx'].to(dtype=ATYPE).contiguous()
+                                w[x + '_rx'] = (w[x + '_rx'] / 16).to(dtype=ATYPE).contiguous()
+                                w[x + '_my'] = w[x + '_my'].to(dtype=ATYPE).contiguous()
+                                w[x + '_ry'] = (w[x + '_ry'] / 16).to(dtype=ATYPE).contiguous()
                         else:
                             w[x] = w[x].to(dtype=ATYPE)
-                
+
                 if convert_and_save_and_exit == None:
                     if 'emb.' in x:
                         w[x] = w[x].contiguous()
-                    elif (dd.stream) and (x.endswith('key.weight') or x.endswith('value.weight') or x.endswith('receptance.weight') or x.endswith('output.weight')):
+                    elif (dd.stream) and (x.endswith('key.weight') or x.endswith('value.weight') or x.endswith(
+                            'receptance.weight') or x.endswith('output.weight')):
                         try:
-                            w[x] = w[x].contiguous().pin_memory() # if you see "CUDA error: out of memory" here, that's out of CPU RAM, not VRAM. Get more RAM :)
+                            w[x] = w[
+                                x].contiguous().pin_memory()  # if you see "CUDA error: out of memory" here, that's out of CPU RAM, not VRAM. Get more RAM :)
                         except:
                             print('Note: You are running out of RAM. Get more CPU RAM. Now this will run much slower.')
                     elif DEVICE != 'cpu':
                         w[x] = w[x].to(device=DEVICE).contiguous()
-                    
+
                     if (dd.stream) or (DEVICE != 'cpu'):
                         try:
-                            w[x+'_mx'] = w[x+'_mx'].to(device=DEVICE).contiguous()
-                            w[x+'_rx'] = w[x+'_rx'].to(device=DEVICE).contiguous()
-                            w[x+'_my'] = w[x+'_my'].to(device=DEVICE).contiguous()
-                            w[x+'_ry'] = w[x+'_ry'].to(device=DEVICE).contiguous()
+                            w[x + '_mx'] = w[x + '_mx'].to(device=DEVICE).contiguous()
+                            w[x + '_rx'] = w[x + '_rx'].to(device=DEVICE).contiguous()
+                            w[x + '_my'] = w[x + '_my'].to(device=DEVICE).contiguous()
+                            w[x + '_ry'] = w[x + '_ry'].to(device=DEVICE).contiguous()
                         except:
                             pass
 
@@ -294,17 +320,19 @@ class RWKV(MyModule):
                     shape = f" {str(shape[0]).rjust(5)} {str(shape[1]).rjust(5)}"
                 else:
                     shape = f" {str(shape[0]).rjust(5)}      "
-                if layer_id == 0 or layer_id >= args.n_layer-1:
+                if layer_id == 0 or layer_id >= args.n_layer - 1:
                     if print_need_newline:
-                        prxxx('\n', end = '')
+                        prxxx('\n', end='')
                         print_need_newline = False
                     dt = str(w[x].dtype).replace('torch.', '')
-                    dt = dt.replace('float32', 'f32').replace('bfloat16', 'bf16').replace('float16', 'f16').replace('uint8', 'i8')
-                    prxxx(x.ljust(32), dt.rjust(4), str(w[x].device).rjust(8), shape, ' (pinned)' if w[x].is_pinned() else '')
+                    dt = dt.replace('float32', 'f32').replace('bfloat16', 'bf16').replace('float16', 'f16').replace(
+                        'uint8', 'i8')
+                    prxxx(x.ljust(32), dt.rjust(4), str(w[x].device).rjust(8), shape,
+                          ' (pinned)' if w[x].is_pinned() else '')
                 else:
                     print_need_newline = True
-                    prxxx('.', end = '', flush = True)
-            
+                    prxxx('.', end='', flush=True)
+
             if convert_and_save_and_exit:
                 w['_strategy'] = args.strategy_string
                 w['_rescale_layer'] = self.RESCALE_LAYER
@@ -315,7 +343,7 @@ class RWKV(MyModule):
                 torch.save(w, convert_and_save_and_exit)
                 prxxx(f'Converted and saved. Now this will exit.')
                 exit(0)
-            
+
             gc.collect()
             if 'cuda' in args.strategy_string:
                 torch.cuda.empty_cache()
@@ -669,8 +697,8 @@ class RWKV(MyModule):
             
             dd = self.strategy[args.n_layer]
             #x = x[:,-1,:] if (seq_mode and (not full_output)) else x
-            last = x[torch.arange(x.size(0)), lengs, :] if (seq_mode and (not full_output)) else x
-            x = last.to(dtype=dd.atype, device=dd.device)
+            x = x[torch.arange(x.size(0)), lengs, :] if (seq_mode and (not full_output)) else x
+            x = x.to(dtype=dd.atype, device=dd.device)
             x = F.layer_norm(x, (args.n_embd,), weight=w['ln_out.weight'], bias=w['ln_out.bias'])
             if w['head.weight'].dtype != torch.uint8:
                 x = x @ w['head.weight']
@@ -679,4 +707,4 @@ class RWKV(MyModule):
                     x = self.mm8_seq(x, w['head.weight'], w['head.weight_mx'], w['head.weight_rx'], w['head.weight_my'], w['head.weight_ry'])
                 else:
                     x = self.mm8_one(x, w['head.weight'], w['head.weight_mx'], w['head.weight_rx'], w['head.weight_my'], w['head.weight_ry'])
-            return x.float(), state, last
+            return x.float(), state
