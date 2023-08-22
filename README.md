@@ -14,4 +14,4 @@ while len(tokens[0]) > 0:
     tokens = tokens[:, args.chunk_len:]
 
 ```
-# 最后再提醒一句，padding实现的并行推理会有一定程度的浪费，每个batch中的数据最后接近于等长减少浪费。后续可以等待rwkv群里大佬修改kernel去除padding浪费问题。
+## 最后再提醒一句，padding实现的并行推理会有一定程度的浪费，每个batch中的数据最好接近于等长减少浪费。后续可以等待rwkv群里大佬修改kernel去除padding浪费问题。
