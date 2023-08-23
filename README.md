@@ -1,5 +1,5 @@
 # rwkv_padding rwkv的并行推理
-###通过padding将所有问题等长化。 需要注意的是由于jit问题导致目前有一定的state小数点后几位有细微差别，目前没有解决，不开jit时state完全一致
+### 通过padding将所有问题等长化。 需要注意的是由于jit问题导致目前有一定的state小数点后几位有细微差别，目前没有解决，不开jit时state完全一致
 padding操作可参考hf 官网教程
 
 gen.py 提供了使用实例，参考gen_bsz 根据自己的需求修改generate函数
